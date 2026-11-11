@@ -1,0 +1,24 @@
+name: Предложить улучшение
+description: Новая функция или улучшение прошивки и инструментов разработки.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу нужно решить
+      description: Опишите сценарий и чего сейчас не хватает.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Предлагаемое решение
+      description: Как должно работать улучшение с точки зрения пользователя?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативы и примеры
+      description: Другие варианты решения, ссылки, рисунки или примеры. Необязательно.

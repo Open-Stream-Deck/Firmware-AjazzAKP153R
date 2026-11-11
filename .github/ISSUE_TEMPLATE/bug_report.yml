@@ -1,0 +1,43 @@
+name: Сообщить об ошибке
+description: Проблема с прошивкой, сборкой или обновлением AJAZZ AKP153R.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: input
+    id: firmware
+    attributes:
+      label: Версия прошивки
+      description: Укажите версию релиза или commit своей сборки.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Окружение
+      description: ОС, версия Open Stream Deck и способ подключения USB. Для ошибки сборки укажите компилятор и его версию.
+      placeholder: Windows 11, Open Stream Deck ..., USB напрямую
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что произошло
+      description: Опишите проблему и ожидаемое поведение.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Как повторить
+      description: Перечислите действия. Если ошибка возникает не всегда, укажите частоту.
+      placeholder: |
+        1. Подключить устройство
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Логи, фото или видео
+      description: Приложите вывод сборки, сообщения об ошибках или запись поведения устройства, если они есть.

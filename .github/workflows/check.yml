@@ -1,0 +1,124 @@
+name: Firmware checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Firmware checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Cache ARM toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/arm-gnu-toolchain
+          key: arm-gnu-toolchain-13.2.rel1-x86_64
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          if [[ "${{ steps.toolchain.outputs.cache-hit }}" != "true" ]]; then
+            mkdir -p ~/arm-gnu-toolchain
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 \
+              https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi.tar.xz \
+              | tar -xJ --strip-components=1 -C ~/arm-gnu-toolchain
+          fi
+          echo "$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_PATH"
+          if ! command -v clang-format-18 >/dev/null; then
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install --no-install-recommends -y clang-format-18
+          fi
+      - name: Check script syntax
+        id: syntax
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          for script in *.sh; do bash -n "$script"; done
+          python3 -m compileall -q tools tests
+      - name: Check formatting
+        id: formatting
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: CLANG_FORMAT=clang-format-18 bash format.sh --check
+      - name: Analyze firmware
+        id: analysis
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: bash analyze.sh
+      - name: Run host tests
+        id: tests
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: bash test.sh
+      - name: Build firmware
+        id: build
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: bash build.sh
+      - name: Upload firmware
+        id: artifacts
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/AjazzAKP153R-v*.bin
+            build/AjazzAKP153R-v*.elf
+            build/AjazzAKP153R-v*.map
+            build/firmware.json
+            LICENSE
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summarize checks
+        if: ${{ !cancelled() }}
+        env:
+          CHECK_RESULTS: ${{ toJSON(steps) }}
+          ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          results = json.loads(os.environ['CHECK_RESULTS'])
+          checks = {
+              'dependencies': 'Зависимости',
+              'syntax': 'Синтаксис скриптов',
+              'formatting': 'Форматирование C',
+              'analysis': 'Статический анализ ARM GCC',
+              'tests': 'Тесты с AddressSanitizer и UBSan',
+              'build': 'ARM-сборка и проверка образа',
+              'artifacts': 'Сборочные файлы',
+          }
+          statuses = {
+              'success': 'Пройдено',
+              'failure': 'Ошибка',
+              'cancelled': 'Отменено',
+              'skipped': 'Не выполнено',
+          }
+          outcomes = {key: results.get(key, {}).get('outcome', 'skipped') for key in checks}
+          passed = all(outcome == 'success' for outcome in outcomes.values())
+          verdict = 'Все автоматические проверки пройдены.' if passed else 'Проверки не пройдены полностью. Требуется разбор результатов.'
+          lines = ['## Проверка прошивки', '', verdict, '', '| Проверка | Результат |', '| --- | --- |']
+          for key, label in checks.items():
+              lines.append(f'| {label} | {statuses.get(outcomes[key], "Не выполнено")} |')
+          if os.environ.get('ARTIFACT_URL'):
+              lines.extend(['', f'[Скачать сборочные файлы]({os.environ["ARTIFACT_URL"]})'])
+          lines.extend([
+              '',
+              'Проверки на хосте не подтверждают работу USB, DMA, дисплея и кнопок на реальном устройстве.',
+              'Перед слиянием требуется ручное ревью; аппаратные изменения требуют проверки на AJAZZ AKP153R.',
+              '',
+          ])
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as output:
+              output.write('\n'.join(lines))
+          PY

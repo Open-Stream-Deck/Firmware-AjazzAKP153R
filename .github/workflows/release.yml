@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        run: |
+          version=$(python3 tools/version.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match tools/version.py version $version" >&2
+            exit 1
+          fi
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no $version section" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache ARM toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/arm-gnu-toolchain
+          key: arm-gnu-toolchain-13.2.rel1-x86_64
+
+      - name: Install ARM toolchain
+        run: |
+          if [[ "${{ steps.toolchain.outputs.cache-hit }}" != "true" ]]; then
+            mkdir -p ~/arm-gnu-toolchain
+            curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 \
+              https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi.tar.xz \
+              | tar -xJ --strip-components=1 -C ~/arm-gnu-toolchain
+          fi
+          echo "$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_PATH"
+
+      - run: bash test.sh
+
+      - run: bash build.sh
+
+      - name: Verify image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path('build/firmware.json').read_text())
+          expected_file = f"AjazzAKP153R-v{os.environ['VERSION']}.bin"
+          assert manifest['file'] == expected_file, 'Firmware filename mismatch'
+          image = (Path('build') / expected_file).read_bytes()
+          assert manifest['firmware_version'] == os.environ['VERSION'], 'Firmware version mismatch'
+          assert manifest['bytes'] == len(image), 'Firmware size mismatch'
+          assert manifest['sha256'] == hashlib.sha256(image).hexdigest(), 'Firmware checksum mismatch'
+          PY
+
+      - name: Notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            awk -v v="$VERSION" '
+              index($0, "## [" v "]") == 1 { on = 1; next }
+              on && /^## / { exit }
+              on && !/^\[[^]]+\]: / { print }
+            ' CHANGELOG.md
+            cat <<EOT
+          ## Установка
+
+          1. Скачайте \`AjazzAKP153R-v$VERSION.bin\` из файлов этого релиза.
+          2. В Open Stream Deck откройте «Настройки», «Прошивка», нажмите «Выбрать файл», укажите скачанный BIN и нажмите «Установить».
+          3. Когда приложение попросит, отключите и снова подключите USB.
+
+          Ставится поверх штатной прошивки AJAZZ и любой версии Open Stream Deck. Для установки нужен только BIN, \`firmware.json\` содержит версию и контрольные суммы, ELF и MAP нужны для отладки.
+
+          Некоммерческое использование разрешено с указанием автора по условиям LICENSE. Коммерческое использование требует отдельной письменной лицензии: ceo@lisik.dev
+          EOT
+          } > notes.md
+          cat notes.md
+
+      - name: Publish release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          artifact="build/AjazzAKP153R-v$VERSION"
+          files=("$artifact.bin" build/firmware.json "$artifact.elf" "$artifact.map" LICENSE)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber "${files[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "Ajazz AKP153R v$VERSION" \
+              --notes-file notes.md \
+              --verify-tag
+          fi
